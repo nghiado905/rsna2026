@@ -1,0 +1,77 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Editors and operating-system files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs, temporary files, and generated reports
+*.log
+*.tmp
+*.temp
+logs/
+tmp/
+temp/
+eval_outputs/
+outputs/
+output/
+output_*/
+runs/
+wandb/
+mlruns/
+
+# Model checkpoints and exported networks
+*.pth
+*.pt
+*.ckpt
+*.onnx
+checkpoints/
+weights/
+models/
+
+# Medical images and large generated arrays
+*.dcm
+*.nii
+*.nii.gz
+*.nrrd
+*.mha
+*.mhd
+*.npy
+*.npz
+
+# Local nnU-Net data and result directories
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
