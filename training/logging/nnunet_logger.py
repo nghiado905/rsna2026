@@ -4,6 +4,7 @@ from batchgenerators.utilities.file_and_folder_operations import join
 matplotlib.use('agg')
 import seaborn as sns
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 class nnUNetLogger(object):
@@ -47,8 +48,17 @@ class nnUNetLogger(object):
 
         # handle the ema_fg_dice special case! It is automatically logged when we add a new mean_fg_dice
         if key == 'mean_fg_dice':
-            new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value \
-                if len(self.my_fantastic_logging['ema_fg_dice']) > 0 else value
+            previous_ema = (
+                self.my_fantastic_logging['ema_fg_dice'][epoch - 1]
+                if len(self.my_fantastic_logging['ema_fg_dice']) > 0
+                else np.nan
+            )
+            if not np.isfinite(value):
+                new_ema_pseudo_dice = previous_ema
+            elif np.isfinite(previous_ema):
+                new_ema_pseudo_dice = previous_ema * 0.9 + 0.1 * value
+            else:
+                new_ema_pseudo_dice = value
             self.log('ema_fg_dice', new_ema_pseudo_dice, epoch)
 
     def plot_progress_png(self, output_folder):
