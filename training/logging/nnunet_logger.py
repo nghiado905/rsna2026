@@ -69,9 +69,28 @@ class nnUNetLogger(object):
         # regular progress.png as we are used to from previous nnU-Net versions
         ax = ax_all[0]
         ax2 = ax.twinx()
-        x_values = list(range(epoch + 1))
+        # Use 1-indexed epochs so the plot matches the training log.
+        x_values = np.arange(1, epoch + 2)
         ax.plot(x_values, self.my_fantastic_logging['train_losses'][:epoch + 1], color='b', ls='-', label="loss_tr", linewidth=4)
-        ax.plot(x_values, self.my_fantastic_logging['val_losses'][:epoch + 1], color='r', ls='-', label="loss_val", linewidth=4)
+        val_losses = np.asarray(
+            self.my_fantastic_logging['val_losses'][:epoch + 1], dtype=float
+        )
+        valid_val_mask = np.isfinite(val_losses)
+        # Validation may only run every N epochs. Filtering NaNs makes isolated
+        # validation results visible and connects only the epochs that were evaluated.
+        ax.plot(
+            x_values[valid_val_mask],
+            val_losses[valid_val_mask],
+            color='r',
+            ls='--',
+            marker='o',
+            markersize=10,
+            markeredgecolor='black',
+            markeredgewidth=1.5,
+            label="loss_val",
+            linewidth=3,
+            zorder=10,
+        )
         ax2.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo dice",
                  linewidth=3)
         ax2.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo dice (mov. avg.)",
