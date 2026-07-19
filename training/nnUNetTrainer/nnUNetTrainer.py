@@ -176,6 +176,9 @@ class nnUNetTrainer(object):
 
         ### placeholders
         self.dataloader_train = self.dataloader_val = None  # see on_train_start
+        self.drive_sync_folder_id = None
+        self.drive_credentials_file = None
+        self.drive_token_file = None
 
         ### initializing stuff for remembering things and such
         self._best_ema = None
@@ -948,6 +951,7 @@ class nnUNetTrainer(object):
         # now we can delete latest
         if self.local_rank == 0 and isfile(join(self.output_folder, "checkpoint_latest.pth")):
             os.remove(join(self.output_folder, "checkpoint_latest.pth"))
+        self.sync_output_folder_to_drive()
 
         # shut down dataloaders
         old_stdout = sys.stdout
@@ -1175,6 +1179,64 @@ class nnUNetTrainer(object):
                 torch.save(checkpoint, filename)
             else:
                 self.print_to_log_file('No checkpoint written, checkpointing is disabled')
+
+    def configure_drive_sync(
+        self,
+        drive_sync_folder_id: str = None,
+        drive_credentials_file: str = None,
+        drive_token_file: str = None,
+    ) -> None:
+        self.drive_sync_folder_id = drive_sync_folder_id
+        self.drive_credentials_file = drive_credentials_file
+        self.drive_token_file = drive_token_file
+        if self.drive_sync_folder_id:
+            self.print_to_log_file(
+                "Google Drive sync enabled:",
+                f"folder_id={self.drive_sync_folder_id}",
+                f"credentials={self.drive_credentials_file}",
+                f"token={self.drive_token_file}",
+            )
+
+    def sync_output_folder_to_drive(self) -> None:
+        if self.local_rank != 0 or not self.drive_sync_folder_id:
+            return
+        if not self.drive_credentials_file or not self.drive_token_file:
+            self.print_to_log_file(
+                "Google Drive sync skipped: --drive_credentials_file and "
+                "--drive_token_file are required."
+            )
+            return
+
+        try:
+            from nnunetv2.utilities.google_drive_sync import sync_directory_to_drive
+
+            output_path = os.path.abspath(self.output_folder)
+            if nnUNet_results is not None:
+                try:
+                    remote_prefix_parts = tuple(
+                        os.path.relpath(output_path, os.path.abspath(nnUNet_results)).split(os.sep)
+                    )
+                except ValueError:
+                    remote_prefix_parts = (os.path.basename(output_path),)
+            else:
+                remote_prefix_parts = (os.path.basename(output_path),)
+
+            self.print_to_log_file(
+                "Syncing nnUNet output folder to Google Drive:",
+                output_path,
+                "->",
+                "/".join(remote_prefix_parts),
+            )
+            sync_directory_to_drive(
+                output_path,
+                self.drive_sync_folder_id,
+                self.drive_credentials_file,
+                self.drive_token_file,
+                remote_prefix_parts=remote_prefix_parts,
+                log=self.print_to_log_file,
+            )
+        except Exception as e:
+            self.print_to_log_file(f"WARNING: Google Drive sync failed: {e}")
 
     def load_checkpoint(self, filename_or_checkpoint: Union[dict, str]) -> None:
         if not self.was_initialized:

@@ -36,6 +36,13 @@ desktop.ini
 !.env.example
 *.pem
 *.key
+rsna-502902-df570cce1c15.json
+service_account*.json
+google_service_account*.json
+client_secret*.json
+token.pickle
+data/certi.json
+data/token.pickle
 
 # Logs, temporary files, and generated reports
 *.log
@@ -44,6 +51,7 @@ desktop.ini
 logs/
 tmp/
 temp/
+drive_test_tmp/
 eval_outputs/
 outputs/
 output/
