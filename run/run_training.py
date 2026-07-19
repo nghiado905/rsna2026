@@ -114,26 +114,15 @@ def cleanup_ddp():
 
 
 def configure_optional_training_args(nnunet_trainer: nnUNetTrainer,
-                                     val_every: Optional[int] = None,
-                                     drive_sync_folder_id: Optional[str] = None,
-                                     drive_credentials_file: Optional[str] = None,
-                                     drive_token_file: Optional[str] = None):
+                                     val_every: Optional[int] = None):
     if val_every is not None:
         if val_every < 1:
             raise ValueError('--val_every must be at least 1')
         nnunet_trainer.validation_every_n_epochs = val_every
 
-    if drive_sync_folder_id:
-        nnunet_trainer.configure_drive_sync(
-            drive_sync_folder_id=drive_sync_folder_id,
-            drive_credentials_file=drive_credentials_file,
-            drive_token_file=drive_token_file,
-        )
-
 
 def run_ddp(rank, dataset_name_or_id, configuration, fold, tr, p, disable_checkpointing, c, val,
-            pretrained_weights, npz, val_with_best, world_size, val_every, drive_sync_folder_id,
-            drive_credentials_file, drive_token_file):
+            pretrained_weights, npz, val_with_best, world_size, val_every):
     setup_ddp(rank, world_size)
     torch.cuda.set_device(torch.device('cuda', dist.get_rank()))
 
@@ -141,9 +130,6 @@ def run_ddp(rank, dataset_name_or_id, configuration, fold, tr, p, disable_checkp
     configure_optional_training_args(
         nnunet_trainer,
         val_every=val_every,
-        drive_sync_folder_id=drive_sync_folder_id,
-        drive_credentials_file=drive_credentials_file,
-        drive_token_file=drive_token_file,
     )
 
     if disable_checkpointing:
@@ -178,9 +164,6 @@ def run_training(dataset_name_or_id: Union[str, int],
                  disable_checkpointing: bool = False,
                  val_with_best: bool = False,
                  val_every: Optional[int] = None,
-                 drive_sync_folder_id: Optional[str] = None,
-                 drive_credentials_file: Optional[str] = None,
-                 drive_token_file: Optional[str] = None,
                  device: torch.device = torch.device('cuda')):
     if plans_identifier == 'nnUNetPlans':
         print("\n############################\n"
@@ -222,10 +205,7 @@ def run_training(dataset_name_or_id: Union[str, int],
                      export_validation_probabilities,
                      val_with_best,
                      num_gpus,
-                     val_every,
-                     drive_sync_folder_id,
-                     drive_credentials_file,
-                     drive_token_file),
+                     val_every),
                  nprocs=num_gpus,
                  join=True)
     else:
@@ -234,9 +214,6 @@ def run_training(dataset_name_or_id: Union[str, int],
         configure_optional_training_args(
             nnunet_trainer,
             val_every=val_every,
-            drive_sync_folder_id=drive_sync_folder_id,
-            drive_credentials_file=drive_credentials_file,
-            drive_token_file=drive_token_file,
         )
 
         if disable_checkpointing:
@@ -293,12 +270,6 @@ def run_training_entry():
                              'you dont want to flood your hard drive with checkpoints.')
     parser.add_argument('--val_every', type=int, default=None, required=False,
                         help='[OPTIONAL] Run training-time validation every N epochs.')
-    parser.add_argument('--drive_sync_folder_id', type=str, default=None, required=False,
-                        help='[OPTIONAL] Google Drive folder id used to sync the nnUNet output folder after validation.')
-    parser.add_argument('--drive_credentials_file', type=str, default=None, required=False,
-                        help='[OPTIONAL] OAuth client secrets JSON for Google Drive sync.')
-    parser.add_argument('--drive_token_file', type=str, default=None, required=False,
-                        help='[OPTIONAL] OAuth token pickle file for Google Drive sync.')
     parser.add_argument('-device', type=str, default='cuda', required=False,
                     help="Use this to set the device the training should run with. Available options are 'cuda' "
                          "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
@@ -320,7 +291,7 @@ def run_training_entry():
 
     run_training(args.dataset_name_or_id, args.configuration, args.fold, args.tr, args.p, args.pretrained_weights,
                  args.num_gpus, args.npz, args.c, args.val, args.disable_checkpointing, args.val_best,
-                 args.val_every, args.drive_sync_folder_id, args.drive_credentials_file, args.drive_token_file,
+                 args.val_every,
                  device=device)
 
 

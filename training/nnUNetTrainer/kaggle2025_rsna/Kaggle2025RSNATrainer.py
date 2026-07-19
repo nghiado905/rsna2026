@@ -1026,8 +1026,6 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         # --- plots (rank 0 only) ---
         if self.local_rank == 0:
             self.logger.plot_progress_png(self.output_folder)
-            if self._validated_this_epoch:
-                self.sync_output_folder_to_drive()
 
         self.current_epoch += 1
 

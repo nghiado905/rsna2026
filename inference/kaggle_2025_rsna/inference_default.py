@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from nnunetv2.dataset_conversion.kaggle_2025_rsna.official_data_to_nnunet_default import (
+from nnunetv2.dataset_conversion.kaggle_2025_rsna.official_data_to_nnunet import (
     load_and_crop,
 )
 from nnunetv2.inference.export_prediction import (
