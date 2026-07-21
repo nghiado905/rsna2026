@@ -36,6 +36,10 @@ desktop.ini
 !.env.example
 *.pem
 *.key
+data/
+rsna-502902-df570cce1c15.json
+service_account*.json
+google_service_account*.json
 
 # Logs, temporary files, and generated reports
 *.log

@@ -391,6 +391,10 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         self.initial_lr = cfg.get("initial_lr", self.initial_lr)
         self.num_epochs = cfg.get("num_epochs", self.num_epochs)
         self.save_every = cfg.get("save_every", self.save_every)
+        self.validation_every_n_epochs = cfg.get("validation_every_n_epochs", 50)
+        if self.validation_every_n_epochs < 1:
+            raise ValueError("validation_every_n_epochs must be at least 1")
+        self._validated_this_epoch = False
 
         # Pretty console banner (ANSI) for quick debugging
         _c = lambda code: f"\033[{code}m"
@@ -414,6 +418,7 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             f"{cyan}initial_lr{reset}: {self.initial_lr}",
             f"{cyan}num_epochs{reset}: {self.num_epochs}",
             f"{cyan}save_every{reset}: {self.save_every}",
+            f"{cyan}validation_every_n_epochs{reset}: {self.validation_every_n_epochs}",
             f"{cyan}arch_class{reset}: {getattr(arch, 'network_class_name', getattr(arch, 'get', lambda k, d=None: None)('network_class_name', None)) if isinstance(arch, dict) else arch}",
             f"{bold}{green}Plans name{reset}: {plans.get('plans_name', 'unknown')}",
             f"{bold}{yellow}Dataset{reset}: {plans.get('dataset_name', 'unknown')}",
@@ -903,6 +908,48 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
 
         return {"loss": l.detach().cpu().numpy()}
 
+    def run_training(self):
+        self.on_train_start()
+
+        for _ in range(self.current_epoch, self.num_epochs):
+            self.on_epoch_start()
+
+            self.on_train_epoch_start()
+            train_outputs = []
+            for _ in range(self.num_iterations_per_epoch):
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
+            self.on_train_epoch_end(train_outputs)
+
+            epoch_1idx = self.current_epoch + 1
+            self._validated_this_epoch = (
+                epoch_1idx % self.validation_every_n_epochs == 0
+                or epoch_1idx == self.num_epochs
+            )
+
+            if self._validated_this_epoch:
+                self.print_to_log_file(
+                    f"Running validation at epoch {epoch_1idx}/{self.num_epochs}"
+                )
+                with torch.no_grad():
+                    self.on_validation_epoch_start()
+                    val_outputs = []
+                    for _ in range(self.num_val_iterations_per_epoch):
+                        val_outputs.append(
+                            self.validation_step(next(self.dataloader_val))
+                        )
+                    self.on_validation_epoch_end(val_outputs)
+            else:
+                # Keep logger histories aligned with the epoch count.
+                self.logger.log("mean_fg_dice", np.nan, self.current_epoch)
+                self.logger.log(
+                    "dice_per_class_or_region", [np.nan, np.nan], self.current_epoch
+                )
+                self.logger.log("val_losses", np.nan, self.current_epoch)
+
+            self.on_epoch_end()
+
+        self.on_train_end()
+
     def on_validation_epoch_end(self, val_outputs: List[dict]):
         # logs val loss instead of fg dice
         outputs_collated = collate_outputs(val_outputs)
@@ -929,9 +976,15 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             "train_loss",
             np.round(self.logger.my_fantastic_logging["train_losses"][-1], 6),
         )
-        self.print_to_log_file(
-            "val_loss", np.round(self.logger.my_fantastic_logging["val_losses"][-1], 6)
-        )
+        if self._validated_this_epoch:
+            self.print_to_log_file(
+                "val_loss",
+                np.round(self.logger.my_fantastic_logging["val_losses"][-1], 6),
+            )
+        else:
+            self.print_to_log_file(
+                f"validation skipped (runs every {self.validation_every_n_epochs} epochs)"
+            )
         self.print_to_log_file(
             f"Epoch time: {np.round(self.logger.my_fantastic_logging['epoch_end_timestamps'][-1] - self.logger.my_fantastic_logging['epoch_start_timestamps'][-1], 2)} s"
         )
@@ -940,6 +993,7 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         epoch_1idx = self.current_epoch + 1
         if (
             self.local_rank == 0
+            and self._validated_this_epoch
             and (epoch_1idx % 250) == 0
             and self.current_epoch != (self.num_epochs - 1)
         ):
@@ -949,13 +1003,16 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             )
 
         current_epoch = self.current_epoch
-        if (current_epoch + 1) % self.save_every == 0 and current_epoch != (
-            self.num_epochs - 1
+        if (
+            self.local_rank == 0
+            and self._validated_this_epoch
+            and (current_epoch + 1) % self.save_every == 0
+            and current_epoch != (self.num_epochs - 1)
         ):
             self.save_checkpoint(join(self.output_folder, "checkpoint_latest.pth"))
 
         # --- 'best' checkpointing (lower is better per your comment) ---
-        if (
+        if self._validated_this_epoch and (
             self._best_ema is None
             or self.logger.my_fantastic_logging["ema_fg_dice"][-1] < self._best_ema
         ):

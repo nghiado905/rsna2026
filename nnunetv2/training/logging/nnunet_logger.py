@@ -4,6 +4,7 @@ from batchgenerators.utilities.file_and_folder_operations import join
 matplotlib.use('agg')
 import seaborn as sns
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 class nnUNetLogger(object):
@@ -47,8 +48,17 @@ class nnUNetLogger(object):
 
         # handle the ema_fg_dice special case! It is automatically logged when we add a new mean_fg_dice
         if key == 'mean_fg_dice':
-            new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value \
-                if len(self.my_fantastic_logging['ema_fg_dice']) > 0 else value
+            previous_ema = (
+                self.my_fantastic_logging['ema_fg_dice'][epoch - 1]
+                if len(self.my_fantastic_logging['ema_fg_dice']) > 0
+                else np.nan
+            )
+            if not np.isfinite(value):
+                new_ema_pseudo_dice = previous_ema
+            elif np.isfinite(previous_ema):
+                new_ema_pseudo_dice = previous_ema * 0.9 + 0.1 * value
+            else:
+                new_ema_pseudo_dice = value
             self.log('ema_fg_dice', new_ema_pseudo_dice, epoch)
 
     def plot_progress_png(self, output_folder):
@@ -59,9 +69,28 @@ class nnUNetLogger(object):
         # regular progress.png as we are used to from previous nnU-Net versions
         ax = ax_all[0]
         ax2 = ax.twinx()
-        x_values = list(range(epoch + 1))
+        # Use 1-indexed epochs so the plot matches the training log.
+        x_values = np.arange(1, epoch + 2)
         ax.plot(x_values, self.my_fantastic_logging['train_losses'][:epoch + 1], color='b', ls='-', label="loss_tr", linewidth=4)
-        ax.plot(x_values, self.my_fantastic_logging['val_losses'][:epoch + 1], color='r', ls='-', label="loss_val", linewidth=4)
+        val_losses = np.asarray(
+            self.my_fantastic_logging['val_losses'][:epoch + 1], dtype=float
+        )
+        valid_val_mask = np.isfinite(val_losses)
+        # Validation may only run every N epochs. Filtering NaNs makes isolated
+        # validation results visible and connects only the epochs that were evaluated.
+        ax.plot(
+            x_values[valid_val_mask],
+            val_losses[valid_val_mask],
+            color='r',
+            ls='--',
+            marker='o',
+            markersize=10,
+            markeredgecolor='black',
+            markeredgewidth=1.5,
+            label="loss_val",
+            linewidth=3,
+            zorder=10,
+        )
         ax2.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="pseudo dice",
                  linewidth=3)
         ax2.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="pseudo dice (mov. avg.)",

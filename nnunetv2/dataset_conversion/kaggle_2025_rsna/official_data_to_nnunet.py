@@ -30,6 +30,7 @@ all_labels = [
 ]
 
 STAGE1_TARGET_SPACING = np.array([1.0, 0.55, 0.5], dtype=np.float32)
+NIFTI_SUFFIX = ".nii"
 
 
 def log_step(msg: str):
@@ -564,7 +565,9 @@ def process_id(
     mapping,
     loc_df,
     workers,
-    stage1_predictor,
+    stage1_predictor=None,
+    crop_mode: str = "stage1",
+    label_radius: float = 65,
 ):
     # Load series
     full_folder = series_folder / folder
@@ -576,7 +579,7 @@ def process_id(
     # Determine output ID
     out_id = mapping[folder]
     log_step(f"Process case | series={folder} id={out_id}")
-    outfile = imagesTr / f"{out_id}_0000.nii"
+    outfile = imagesTr / f"{out_id}_0000{NIFTI_SUFFIX}"
     image3D, bbox = None, None
 
     # Load and process DICOM
@@ -586,15 +589,21 @@ def process_id(
     # Save as NIfTI .nii
     assert folder in list(mapping.keys())
 
-    # Apply Stage-1 ROI cropping (replace fixed-size get_bbox)
+    # Apply the configured ROI crop.
     img3d = sitk.GetArrayFromImage(image3D).squeeze()
     log_shape(folder, "raw_image_np_zyx", array=img3d)
-    try:
-        bbox = get_stage1_bbox(img3d, image3D, stage1_predictor)
-    except Exception as e:
-        print(f"[{folder}] Stage-1 bbox failed ({e}), fallback to fixed get_bbox")
+    if crop_mode == "stage1" and stage1_predictor is not None:
+        try:
+            bbox = get_stage1_bbox(img3d, image3D, stage1_predictor)
+        except Exception as e:
+            print(f"[{folder}] Stage-1 bbox failed ({e}), fallback to fixed get_bbox")
+            spacing = np.flip(np.array(image3D.GetSpacing()))
+            bbox = get_bbox(img=img3d, spacing=spacing)
+    elif crop_mode == "fixed":
         spacing = np.flip(np.array(image3D.GetSpacing()))
         bbox = get_bbox(img=img3d, spacing=spacing)
+    else:
+        raise ValueError(f"Unsupported crop_mode={crop_mode!r}")
 
     log_step(f"Crop bbox zyx={bbox}")
     img_crop = img3d[bbox[0] : bbox[1], bbox[2] : bbox[3], bbox[-2] : bbox[-1]]
@@ -610,7 +619,7 @@ def process_id(
     log_step(f"Saved image crop: {outfile}")
 
     # Process aneurysm label file
-    out_label_file = labelsTr / f"{out_id}.nii"
+    out_label_file = labelsTr / f"{out_id}{NIFTI_SUFFIX}"
 
     # Process labels
     if not out_label_file.exists():
@@ -653,7 +662,10 @@ def process_id(
                     center = [float(axial_ind), coordinate["y"], coordinate["x"]]
 
                 label_array = create_sphere(
-                    array_shape=img.shape, center=center, radius=65, value=ind + 1
+                    array_shape=img.shape,
+                    center=center,
+                    radius=label_radius,
+                    value=ind + 1,
                 )
 
                 arrays.append(label_array)
@@ -667,7 +679,7 @@ def process_id(
             image_ref=image3D,
         )
 
-        out_image_file = labelsTr / f"{out_id}.nii"
+        out_image_file = labelsTr / f"{out_id}{NIFTI_SUFFIX}"
         out_json_file = labelsTr / f"{out_id}.json"
 
         label_img = sitk.GetArrayFromImage(label_image).squeeze()
@@ -699,10 +711,12 @@ def main(
     input_folder: Path,
     output_folder: Path,
     workers: int,
-    stage1_model_dir: Path,
-    stage1_checkpoint: str,
-    stage1_fold: int,
-    device: str,
+    stage1_model_dir: Path | None = None,
+    stage1_checkpoint: str = "checkpoint_final.pth",
+    stage1_fold: int = 0,
+    device: str = "auto",
+    crop_mode: str = "stage1",
+    label_radius: float = 65,
 ):
     log_step("Step 1: Validate input paths")
     label_file = input_folder / "train.csv"
@@ -717,7 +731,11 @@ def main(
     ), f"Folder with series '{series_folder}' does not exist."
     assert label_file.exists(), f"Label file '{label_file}' does not exist."
     assert loc_file.exists(), f"Location file '{loc_file}' does not exist."
-    assert stage1_model_dir.exists(), f"Stage-1 model dir '{stage1_model_dir}' does not exist."
+    if crop_mode not in {"fixed", "stage1"}:
+        raise ValueError(f"Unsupported crop_mode={crop_mode!r}")
+    if crop_mode == "stage1":
+        assert stage1_model_dir is not None, "stage1_model_dir is required when crop_mode='stage1'."
+        assert stage1_model_dir.exists(), f"Stage-1 model dir '{stage1_model_dir}' does not exist."
 
     log_step("Step 2: Prepare output folders")
     imagesTr = output_folder / "imagesTr"
@@ -751,14 +769,17 @@ def main(
 
     label_df.to_csv(label_out_file)
 
-    log_step("Step 4: Initialize Stage-1 ROI predictor")
-    # Initialize Stage-1 ROI predictor once
-    stage1_predictor = init_stage1_predictor(
-        model_training_output_dir=stage1_model_dir,
-        checkpoint_name=stage1_checkpoint,
-        fold=stage1_fold,
-        device_str=device,
-    )
+    stage1_predictor = None
+    if crop_mode == "stage1":
+        log_step("Step 4: Initialize Stage-1 ROI predictor")
+        stage1_predictor = init_stage1_predictor(
+            model_training_output_dir=stage1_model_dir,
+            checkpoint_name=stage1_checkpoint,
+            fold=stage1_fold,
+            device_str=device,
+        )
+    else:
+        log_step("Step 4: Stage-1 disabled; using fixed ROI crop")
 
     log_step("Step 5: Convert series to imagesTr/labelsTr")
     # Convert IDs in parallel, keep only IDs with label information
@@ -773,6 +794,8 @@ def main(
             loc_df,
             workers,
             stage1_predictor,
+            crop_mode=crop_mode,
+            label_radius=label_radius,
         )
 
     log_step("Step 6: Write dataset.json")
@@ -813,7 +836,7 @@ if __name__ == "__main__":
         "--stage1_model_dir",
         help="Path to Stage-1 nnXNet model folder (nnUNetTrainer__nnUNetPlans__2d)",
         type=Path,
-        required=True,
+        required=False,
     )
     parser.add_argument(
         "--stage1_checkpoint",
@@ -833,7 +856,22 @@ if __name__ == "__main__":
         type=str,
         default="auto",
     )
+    parser.add_argument(
+        "--crop_mode",
+        choices=("fixed", "stage1"),
+        default="stage1",
+        help="Use fixed ROI crop or Stage-1 predicted bbox crop.",
+    )
+    parser.add_argument(
+        "--label_radius",
+        type=float,
+        default=None,
+        help="Sphere radius for label generation. Defaults to 5 for fixed crop and 65 for Stage-1 crop.",
+    )
     args = parser.parse_args()
+    label_radius = args.label_radius
+    if label_radius is None:
+        label_radius = 5 if args.crop_mode == "fixed" else 65
 
     main(
         input_folder=args.input_folder,
@@ -843,4 +881,6 @@ if __name__ == "__main__":
         stage1_checkpoint=args.stage1_checkpoint,
         stage1_fold=args.stage1_fold,
         device=args.device,
+        crop_mode=args.crop_mode,
+        label_radius=label_radius,
     )

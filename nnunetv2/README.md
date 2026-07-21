@@ -129,26 +129,31 @@ The conversion pipeline:
 5. converts localizers into label volumes;
 6. writes `imagesTr`, `labelsTr`, `labels.csv`, `ids_mapping.json`, and `dataset.json`.
 
+All conversion modes are handled by one file:
+`dataset_conversion/kaggle_2025_rsna/official_data_to_nnunet.py`.
+
 ### Option A — Fixed Upstream Crop
 
-`official_data_to_nnunet_default.py` uses an approximately `200 x 160 x 160 mm` fixed ROI:
-
-```bash
-python rsna-aneurysm-v1/dataset_conversion/kaggle_2025_rsna/official_data_to_nnunet_default.py \
-  -i /data/rsna-intracranial-aneurysm-detection \
-  -o "$nnUNet_raw/Dataset004_iarsna_crop" \
-  --np 8
-```
-
-### Option B — Stage-1 Bounding-Box Crop
-
-`official_data_to_nnunet.py` uses the Stage-1 prediction. If Stage-1 fails, `load_and_crop()` falls back to the fixed crop.
+Use `--crop_mode fixed` for the approximately `200 x 160 x 160 mm` fixed ROI:
 
 ```bash
 python rsna-aneurysm-v1/dataset_conversion/kaggle_2025_rsna/official_data_to_nnunet.py \
   -i /data/rsna-intracranial-aneurysm-detection \
   -o "$nnUNet_raw/Dataset004_iarsna_crop" \
   --np 8 \
+  --crop_mode fixed
+```
+
+### Option B — Stage-1 Bounding-Box Crop
+
+Use `--crop_mode stage1` for the Stage-1 prediction. If Stage-1 fails, `load_and_crop()` falls back to the fixed crop.
+
+```bash
+python rsna-aneurysm-v1/dataset_conversion/kaggle_2025_rsna/official_data_to_nnunet.py \
+  -i /data/rsna-intracranial-aneurysm-detection \
+  -o "$nnUNet_raw/Dataset004_iarsna_crop" \
+  --np 8 \
+  --crop_mode stage1 \
   --stage1_model_dir /models/Dataset180_2D_vessel_box_seg/nnUNetTrainer__nnUNetPlans__2d \
   --stage1_checkpoint checkpoint_final.pth \
   --stage1_fold 0 \
@@ -178,14 +183,30 @@ vessel_masks/
 `-- iarsna_0001.nii.gz
 ```
 
-`overlay_on_images.py` does not create another channel. It multiplies intensity inside `mask > 0`, clips the volume, applies z-score normalization, and saves the result as channel `0`:
+`overlay_on_images.py` does not create another channel. It creates a single `*_0000.nii` image using one vessel-guidance method and optional normalization.
 
 ```bash
 python rsna-aneurysm-v1/overlay_on_images.py \
   --images-dir /data/cropped_images \
   --mask-dir /data/vessel_masks \
   --output-dir /data/Dataset104_iarsna_crop_overlay/imagesTr \
+  --method multiply \
   --multiply-factor 1.15 \
+  --normalize zscore \
+  --num-workers 8
+```
+
+Available methods are `multiply`, `add`, `replace`, `mask`, `distance`, and `frangi`. Example Frangi vesselness output:
+
+```bash
+python rsna-aneurysm-v1/overlay_on_images.py \
+  --images-dir /data/cropped_images \
+  --mask-dir /data/vessel_masks \
+  --output-dir /data/Dataset104_iarsna_crop_frangi/imagesTr \
+  --method frangi \
+  --frangi-sigmas 1 2 3 \
+  --frangi-mask-output \
+  --normalize minmax \
   --num-workers 8
 ```
 
@@ -248,6 +269,7 @@ python rsna-aneurysm-v1/inference/kaggle_2025_rsna/inference_default.py \
 ```
 
 Flow: `DICOM -> fixed crop -> Y flip -> aneurysm model`.
+This pipeline imports `official_data_to_nnunet.py`; without a Stage-1 predictor, `load_and_crop()` uses the fixed crop.
 
 ### Pipeline 2 — Stage-1 Bounding-Box Crop
 
@@ -265,6 +287,7 @@ python rsna-aneurysm-v1/inference/kaggle_2025_rsna/inference_crop_classfication.
 ```
 
 Flow: `DICOM -> Stage-1 bounding box -> crop -> Y flip -> aneurysm model`.
+This pipeline imports `official_data_to_nnunet.py` and passes a Stage-1 predictor to `load_and_crop()`.
 
 The `[CROP] ... source=stage1` log confirms that Stage-1 was used. `source=fixed_fallback` indicates that Stage-1 failed and the fixed crop was used.
 
@@ -288,6 +311,7 @@ python rsna-aneurysm-v1/inference/kaggle_2025_rsna/inference_crop_vessel_classif
 ```
 
 Flow: `DICOM -> Stage-1 crop -> TopCoW mask -> vessel-enhanced image -> aneurysm model`.
+The crop step uses the same `official_data_to_nnunet.py` Stage-1 crop as Pipeline 2; the extra step is vessel feature generation before aneurysm inference.
 
 ## Evaluation
 
