@@ -418,7 +418,8 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             f"{cyan}initial_lr{reset}: {self.initial_lr}",
             f"{cyan}num_epochs{reset}: {self.num_epochs}",
             f"{cyan}save_every{reset}: {self.save_every}",
-            f"{cyan}validation_every_n_epochs{reset}: {self.validation_every_n_epochs}",
+            # A CLI --val_every override is applied after trainer construction.
+            f"{cyan}validation_every_n_epochs (plans/default){reset}: {self.validation_every_n_epochs}",
             f"{cyan}arch_class{reset}: {getattr(arch, 'network_class_name', getattr(arch, 'get', lambda k, d=None: None)('network_class_name', None)) if isinstance(arch, dict) else arch}",
             f"{bold}{green}Plans name{reset}: {plans.get('plans_name', 'unknown')}",
             f"{bold}{yellow}Dataset{reset}: {plans.get('dataset_name', 'unknown')}",

@@ -118,7 +118,13 @@ def configure_optional_training_args(nnunet_trainer: nnUNetTrainer,
     if val_every is not None:
         if val_every < 1:
             raise ValueError('--val_every must be at least 1')
+        previous_val_every = nnunet_trainer.validation_every_n_epochs
         nnunet_trainer.validation_every_n_epochs = val_every
+        nnunet_trainer.print_to_log_file(
+            f"CLI override: validation_every_n_epochs "
+            f"{previous_val_every} -> {nnunet_trainer.validation_every_n_epochs}",
+            also_print_to_console=True,
+        )
 
 
 def run_ddp(rank, dataset_name_or_id, configuration, fold, tr, p, disable_checkpointing, c, val,
