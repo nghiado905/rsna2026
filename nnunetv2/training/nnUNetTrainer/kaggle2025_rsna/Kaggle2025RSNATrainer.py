@@ -55,6 +55,7 @@ from threadpoolctl import threadpool_limits
 from torch import nn, autocast, topk
 from torch import distributed as dist
 from torch.nn import functional as F, BCEWithLogitsLoss
+from tqdm import tqdm
 
 from nnunetv2.configuration import ANISO_THRESHOLD
 from nnunetv2.configuration import default_num_processes
@@ -459,6 +460,41 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         self.print_to_log_file(bar_fmt)
         self.print_to_log_file(title_fmt)
         self.print_to_log_file(bar_fmt)
+
+    def _log_panel(self, title: str, rows: List[str], color: str = "cyan"):
+        """Render a compact terminal panel matching the live progress UI."""
+        if self.local_rank != 0:
+            return
+        width = 92
+        title_segment = f"─ {title} "
+        top = f"╭{title_segment}{'─' * max(0, width - len(title_segment))}╮"
+        bottom = f"╰{'─' * width}╯"
+        panel = [self._style_log(top, color=color, bold=True)]
+        for row in rows:
+            visible_row = f" {row}"[:width].ljust(width)
+            left = self._style_log("│", color=color, bold=True)
+            right = self._style_log("│", color=color, bold=True)
+            panel.append(f"{left}{visible_row}{right}")
+        panel.append(self._style_log(bottom, color=color, bold=True))
+        self.print_to_log_file("\n".join(panel))
+
+    def _progress(self, total: int, description: str, color: str):
+        """Create an animated progress bar on rank 0 only."""
+        return tqdm(
+            range(total),
+            total=total,
+            desc=description,
+            disable=self.local_rank != 0,
+            dynamic_ncols=True,
+            leave=False,
+            mininterval=0.5,
+            smoothing=0.1,
+            colour=color,
+            bar_format=(
+                "{l_bar}{bar}| {n_fmt}/{total_fmt} "
+                "[{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+            ),
+        )
 
     def _build_loss(self):
         loss = BCE_topK_loss_sep_channel(k=20)
@@ -916,12 +952,35 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             self.on_epoch_start()
 
             self.on_train_epoch_start()
+            epoch_1idx = self.current_epoch + 1
+            self._log_panel(
+                f"Epoch {epoch_1idx}/{self.num_epochs}",
+                [
+                    "Stage      = Training",
+                    f"Iterations = {self.num_iterations_per_epoch}",
+                    f"Learning rate = {self.optimizer.param_groups[0]['lr']:.6g}",
+                    f"Next validation = every {self.validation_every_n_epochs} epochs",
+                ],
+                color="cyan",
+            )
             train_outputs = []
-            for _ in range(self.num_iterations_per_epoch):
-                train_outputs.append(self.train_step(next(self.dataloader_train)))
+            running_train_loss = 0.0
+            train_progress = self._progress(
+                self.num_iterations_per_epoch,
+                f"Epoch {epoch_1idx:04d} TRAIN",
+                "cyan",
+            )
+            for iteration in train_progress:
+                output = self.train_step(next(self.dataloader_train))
+                train_outputs.append(output)
+                running_train_loss += float(np.asarray(output["loss"]).mean())
+                if self.local_rank == 0:
+                    train_progress.set_postfix_str(
+                        f"loss={running_train_loss / (iteration + 1):.5f}"
+                    )
+            train_progress.close()
             self.on_train_epoch_end(train_outputs)
 
-            epoch_1idx = self.current_epoch + 1
             self._validated_this_epoch = (
                 epoch_1idx % self.validation_every_n_epochs == 0
                 or epoch_1idx == self.num_epochs
@@ -934,10 +993,21 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
                 with torch.no_grad():
                     self.on_validation_epoch_start()
                     val_outputs = []
-                    for _ in range(self.num_val_iterations_per_epoch):
-                        val_outputs.append(
-                            self.validation_step(next(self.dataloader_val))
-                        )
+                    running_val_loss = 0.0
+                    val_progress = self._progress(
+                        self.num_val_iterations_per_epoch,
+                        f"Epoch {epoch_1idx:04d} VALID",
+                        "magenta",
+                    )
+                    for iteration in val_progress:
+                        output = self.validation_step(next(self.dataloader_val))
+                        val_outputs.append(output)
+                        running_val_loss += float(np.asarray(output["loss"]).mean())
+                        if self.local_rank == 0:
+                            val_progress.set_postfix_str(
+                                f"loss={running_val_loss / (iteration + 1):.5f}"
+                            )
+                    val_progress.close()
                     self.on_validation_epoch_end(val_outputs)
             else:
                 # Keep logger histories aligned with the epoch count.

@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import textwrap
 from time import sleep
 from typing import List, Type, Union
 
@@ -13,6 +14,38 @@ from nnunetv2.paths import nnUNet_raw, nnUNet_preprocessed
 from nnunetv2.preprocessing.cropping.cropping import crop_to_nonzero
 from nnunetv2.utilities.dataset_name_id_conversion import maybe_convert_to_dataset_name
 from nnunetv2.utilities.utils import get_filenames_of_train_images_and_targets
+
+
+_ANSI_RESET = "\033[0m"
+_ANSI_COLORS = {
+    "cyan": "\033[1;96m",
+    "green": "\033[1;92m",
+    "yellow": "\033[1;93m",
+    "red": "\033[1;91m",
+}
+
+
+def _fingerprint_panel(title: str, lines: List[str], color: str, width: int = 110) -> None:
+    """Print a color-coded Unicode panel without requiring an extra dependency."""
+    ansi_color = _ANSI_COLORS[color]
+    title_segment = f"─ {title} "
+    top_border = f"╭{title_segment}{'─' * max(0, width - len(title_segment))}╮"
+    bottom_border = f"╰{'─' * width}╯"
+    panel_lines = [f"{ansi_color}{top_border}{_ANSI_RESET}"]
+
+    for line in lines:
+        wrapped_lines = textwrap.wrap(
+            str(line), width=max(20, width - 2), replace_whitespace=False
+        ) or [""]
+        for wrapped_line in wrapped_lines:
+            content = f" {wrapped_line}".ljust(width)
+            panel_lines.append(
+                f"{ansi_color}│{_ANSI_RESET}{content}{ansi_color}│{_ANSI_RESET}"
+            )
+
+    panel_lines.append(f"{ansi_color}{bottom_border}{_ANSI_RESET}")
+    # Use one print call so panels from multiprocessing callbacks do not interleave.
+    print("\n".join(panel_lines), flush=True)
 
 
 class DatasetFingerprintExtractor(object):
@@ -112,7 +145,15 @@ class DatasetFingerprintExtractor(object):
             return shape_after_crop, spacing, foreground_intensities_per_channel, foreground_intensity_stats_per_channel, \
                    relative_size_after_cropping
         except Exception as e:
-            print(f"[fingerprint] fail khi đọc {image_files} / {segmentation_file}: {e}", flush=True)
+            _fingerprint_panel(
+                "Fingerprint read error",
+                [
+                    f"Images = {image_files}",
+                    f"Label  = {segmentation_file}",
+                    f"Error  = {e}",
+                ],
+                "red",
+            )
             raise
 
     def run(self, overwrite_existing: bool = False) -> dict:
@@ -134,11 +175,24 @@ class DatasetFingerprintExtractor(object):
             r = []
             with multiprocessing.get_context("spawn").Pool(self.num_processes) as p:
                 def _log_err(e, case_id):
-                    print(f"[fingerprint] lỗi ở case {case_id}: {e}", flush=True)
+                    _fingerprint_panel(
+                        "Fingerprint processing error",
+                        [f"Case  = {case_id}", f"Error = {e}"],
+                        "red",
+                    )
 
                 for k in self.dataset.keys():
                     case = self.dataset[k]
-                    print(f"[fingerprint] bắt đầu case {k}: {case['images']}, label={case['label']}", flush=True)
+                    _fingerprint_panel(
+                        "Fingerprint case",
+                        [
+                            "Status = Processing",
+                            f"Case   = {k}",
+                            f"Images = {case['images']}",
+                            f"Label  = {case['label']}",
+                        ],
+                        "cyan",
+                    )
                     r.append(
                         p.apply_async(
                             DatasetFingerprintExtractor.analyze_case,
@@ -208,12 +262,22 @@ class DatasetFingerprintExtractor(object):
 
             try:
                 save_json(fingerprint, properties_file)
+                _fingerprint_panel(
+                    "Fingerprint complete",
+                    ["Status = Saved", f"Output = {properties_file}"],
+                    "green",
+                )
             except Exception as e:
                 if isfile(properties_file):
                     os.remove(properties_file)
                 raise e
         else:
             fingerprint = load_json(properties_file)
+            _fingerprint_panel(
+                "Fingerprint cache",
+                ["Status = Using existing file", f"Input  = {properties_file}"],
+                "yellow",
+            )
         return fingerprint
 
 
