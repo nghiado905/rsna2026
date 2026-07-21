@@ -305,7 +305,6 @@ def write_summary_csv(rows: list[dict], folds: list[list[str]], output_csv: Path
             out.update(row["class_values"])
             writer.writerow(out)
 
-
 def main() -> None:
     args = parse_args()
     output_json = args.output_json or (args.dataset_dir / "splits_final.json")
