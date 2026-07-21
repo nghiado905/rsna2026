@@ -1,5 +1,4 @@
 import multiprocessing
-import sys
 from copy import deepcopy
 from time import sleep, time
 from typing import Union, Tuple, List
@@ -56,20 +55,6 @@ from threadpoolctl import threadpool_limits
 from torch import nn, autocast, topk
 from torch import distributed as dist
 from torch.nn import functional as F, BCEWithLogitsLoss
-from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    ProgressColumn,
-    SpinnerColumn,
-    Task,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
-from rich.text import Text
 
 from nnunetv2.configuration import ANISO_THRESHOLD
 from nnunetv2.configuration import default_num_processes
@@ -88,74 +73,6 @@ from nnunetv2.training.nnUNetTrainer.variants.data_augmentation.nnUNetTrainerDA5
 from nnunetv2.utilities.default_n_proc_DA import get_allowed_n_proc_DA
 from nnunetv2.utilities.file_path_utilities import check_workers_alive_and_busy
 from nnunetv2.utilities.helpers import dummy_context, empty_cache
-
-
-class _IterationsPerSecondColumn(ProgressColumn):
-    """Render a stable iteration rate, including before the first estimate."""
-
-    def render(self, task: Task) -> Text:
-        speed = task.speed
-        return Text(
-            f"{speed:.2f} it/s" if speed is not None else "-- it/s",
-            style="bold blue",
-        )
-
-
-class _StaticTrainingProgress:
-    """Notebook-safe progress output that does not rely on terminal redraws."""
-
-    _COLORS = {
-        "bright_cyan": "\033[1;96m",
-        "bright_magenta": "\033[1;95m",
-    }
-    _RESET = "\033[0m"
-
-    def __init__(self, total: int, description: str, color: str):
-        self.total = total
-        self.description = description
-        self.color = self._COLORS.get(color, "\033[1;96m")
-        self.completed = 0
-        self.started_at = time()
-        # First iteration, then approximately every 10%, and the final iteration.
-        self.log_interval = max(1, total // 10)
-
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        seconds = max(0, int(seconds))
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    def update(self, _task_id, advance: int = 1, **fields):
-        self.completed = min(self.total, self.completed + advance)
-        should_log = (
-            self.completed == 1
-            or self.completed == self.total
-            or self.completed % self.log_interval == 0
-        )
-        if not should_log:
-            return
-
-        elapsed = max(time() - self.started_at, 1e-6)
-        speed = self.completed / elapsed
-        remaining = (self.total - self.completed) / speed if speed > 0 else 0
-        percentage = 100 * self.completed / max(1, self.total)
-        bar_width = 20
-        filled = round(bar_width * self.completed / max(1, self.total))
-        # ASCII remains safe in redirected Windows logs and notebook subprocesses.
-        bar = "#" * filled + "-" * (bar_width - filled)
-        loss = float(fields.get("loss", np.nan))
-        print(
-            f"{self.color}[{self.description}]{self._RESET} "
-            f"{bar} {percentage:5.1f}% {self.completed}/{self.total} | "
-            f"loss={loss:.5f} | {speed:.2f} it/s | "
-            f"elapsed={self._format_duration(elapsed)} | "
-            f"eta={self._format_duration(remaining)}",
-            flush=True,
-        )
-
-    def stop(self):
-        pass
 
 
 # ******************************************************************************************************************************************
@@ -542,60 +459,6 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         self.print_to_log_file(bar_fmt)
         self.print_to_log_file(title_fmt)
         self.print_to_log_file(bar_fmt)
-
-    def _log_panel(self, title: str, rows: List[str], color: str = "cyan"):
-        """Render a compact terminal panel matching the live progress UI."""
-        if self.local_rank != 0:
-            return
-        width = 92
-        title_segment = f"─ {title} "
-        top = f"╭{title_segment}{'─' * max(0, width - len(title_segment))}╮"
-        bottom = f"╰{'─' * width}╯"
-        panel = [self._style_log(top, color=color, bold=True)]
-        for row in rows:
-            visible_row = f" {row}"[:width].ljust(width)
-            left = self._style_log("│", color=color, bold=True)
-            right = self._style_log("│", color=color, bold=True)
-            panel.append(f"{left}{visible_row}{right}")
-        panel.append(self._style_log(bottom, color=color, bold=True))
-        self.print_to_log_file("\n".join(panel))
-
-    def _progress(self, total: int, description: str, color: str):
-        """Start a Rich live progress display on rank 0 only."""
-        if self.local_rank != 0:
-            return None, None
-
-        console = Console()
-        is_real_terminal = bool(
-            getattr(sys.stdout, "isatty", lambda: False)()
-        ) and not console.is_jupyter
-        if not is_real_terminal:
-            return _StaticTrainingProgress(total, description, color), 0
-
-        progress = Progress(
-            SpinnerColumn("bouncingBar", style="bold magenta"),
-            TextColumn(f"[bold {color}]" + "{task.description}"),
-            BarColumn(
-                bar_width=None,
-                style="grey35",
-                complete_style=color,
-                finished_style="bright_green",
-            ),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn("[bold yellow]loss[/bold yellow] {task.fields[loss]:.5f}"),
-            _IterationsPerSecondColumn(),
-            TextColumn("[dim]elapsed[/dim]"),
-            TimeElapsedColumn(),
-            TextColumn("[dim]eta[/dim]"),
-            TimeRemainingColumn(),
-            console=console,
-            refresh_per_second=10,
-            transient=False,
-        )
-        progress.start()
-        task_id = progress.add_task(description, total=total, loss=0.0)
-        return progress, task_id
 
     def _build_loss(self):
         loss = BCE_topK_loss_sep_channel(k=20)
@@ -1053,40 +916,12 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             self.on_epoch_start()
 
             self.on_train_epoch_start()
-            epoch_1idx = self.current_epoch + 1
-            self._log_panel(
-                f"Epoch {epoch_1idx}/{self.num_epochs}",
-                [
-                    "Stage      = Training",
-                    f"Iterations = {self.num_iterations_per_epoch}",
-                    f"Learning rate = {self.optimizer.param_groups[0]['lr']:.6g}",
-                    f"Next validation = every {self.validation_every_n_epochs} epochs",
-                ],
-                color="cyan",
-            )
             train_outputs = []
-            running_train_loss = 0.0
-            train_progress, train_task = self._progress(
-                self.num_iterations_per_epoch,
-                f"Epoch {epoch_1idx:04d} TRAIN",
-                "bright_cyan",
-            )
-            try:
-                for iteration in range(self.num_iterations_per_epoch):
-                    output = self.train_step(next(self.dataloader_train))
-                    train_outputs.append(output)
-                    running_train_loss += float(np.asarray(output["loss"]).mean())
-                    if train_progress is not None:
-                        train_progress.update(
-                            train_task,
-                            advance=1,
-                            loss=running_train_loss / (iteration + 1),
-                        )
-            finally:
-                if train_progress is not None:
-                    train_progress.stop()
+            for _ in range(self.num_iterations_per_epoch):
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
             self.on_train_epoch_end(train_outputs)
 
+            epoch_1idx = self.current_epoch + 1
             self._validated_this_epoch = (
                 epoch_1idx % self.validation_every_n_epochs == 0
                 or epoch_1idx == self.num_epochs
@@ -1099,28 +934,10 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
                 with torch.no_grad():
                     self.on_validation_epoch_start()
                     val_outputs = []
-                    running_val_loss = 0.0
-                    val_progress, val_task = self._progress(
-                        self.num_val_iterations_per_epoch,
-                        f"Epoch {epoch_1idx:04d} VALID",
-                        "bright_magenta",
-                    )
-                    try:
-                        for iteration in range(self.num_val_iterations_per_epoch):
-                            output = self.validation_step(next(self.dataloader_val))
-                            val_outputs.append(output)
-                            running_val_loss += float(
-                                np.asarray(output["loss"]).mean()
-                            )
-                            if val_progress is not None:
-                                val_progress.update(
-                                    val_task,
-                                    advance=1,
-                                    loss=running_val_loss / (iteration + 1),
-                                )
-                    finally:
-                        if val_progress is not None:
-                            val_progress.stop()
+                    for _ in range(self.num_val_iterations_per_epoch):
+                        val_outputs.append(
+                            self.validation_step(next(self.dataloader_val))
+                        )
                     self.on_validation_epoch_end(val_outputs)
             else:
                 # Keep logger histories aligned with the epoch count.
