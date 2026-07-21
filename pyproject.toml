@@ -53,7 +53,8 @@ dependencies = [
     "einops",
     "blosc2>=3.0.0b1",
     "cryoet_data_portal",
-    "edt"
+    "edt",
+    "rich>=13.0"
 ]
 
 [project.urls]

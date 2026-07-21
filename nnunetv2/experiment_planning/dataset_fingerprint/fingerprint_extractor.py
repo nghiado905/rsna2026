@@ -6,7 +6,17 @@ from typing import List, Type, Union
 
 import numpy as np
 from batchgenerators.utilities.file_and_folder_operations import load_json, join, save_json, isfile, maybe_mkdir_p
-from tqdm import tqdm
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from nnunetv2.imageio.base_reader_writer import BaseReaderWriter
 from nnunetv2.imageio.reader_writer_registry import determine_reader_writer_from_dataset_json
@@ -145,16 +155,9 @@ class DatasetFingerprintExtractor(object):
             return shape_after_crop, spacing, foreground_intensities_per_channel, foreground_intensity_stats_per_channel, \
                    relative_size_after_cropping
         except Exception as e:
-            _fingerprint_panel(
-                "Fingerprint read error",
-                [
-                    f"Images = {image_files}",
-                    f"Label  = {segmentation_file}",
-                    f"Error  = {e}",
-                ],
-                "red",
-            )
-            raise
+            raise RuntimeError(
+                f"Failed to read images={image_files}, label={segmentation_file}: {e}"
+            ) from e
 
     def run(self, overwrite_existing: bool = False) -> dict:
         # we do not save the properties file in self.input_folder because that folder might be read-only. We can only
@@ -173,26 +176,14 @@ class DatasetFingerprintExtractor(object):
                                                   len(self.dataset))
 
             r = []
+            errors = []
+            case_ids = list(self.dataset.keys())
             with multiprocessing.get_context("spawn").Pool(self.num_processes) as p:
                 def _log_err(e, case_id):
-                    _fingerprint_panel(
-                        "Fingerprint processing error",
-                        [f"Case  = {case_id}", f"Error = {e}"],
-                        "red",
-                    )
+                    errors.append((case_id, e))
 
-                for k in self.dataset.keys():
+                for k in case_ids:
                     case = self.dataset[k]
-                    _fingerprint_panel(
-                        "Fingerprint case",
-                        [
-                            "Status = Processing",
-                            f"Case   = {k}",
-                            f"Images = {case['images']}",
-                            f"Label  = {case['label']}",
-                        ],
-                        "cyan",
-                    )
                     r.append(
                         p.apply_async(
                             DatasetFingerprintExtractor.analyze_case,
@@ -204,7 +195,30 @@ class DatasetFingerprintExtractor(object):
                 # p is pretty nifti. If we kill workers they just respawn but don't do any work.
                 # So we need to store the original pool of workers.
                 workers = [j for j in p._pool]
-                with tqdm(desc=None, total=len(self.dataset), disable=self.verbose) as pbar:
+                console = Console()
+                with Progress(
+                    SpinnerColumn("bouncingBar", style="bold magenta"),
+                    TextColumn("[bold cyan]{task.description}"),
+                    BarColumn(
+                        bar_width=None,
+                        style="grey35",
+                        complete_style="bright_cyan",
+                        finished_style="bright_green",
+                    ),
+                    TaskProgressColumn(),
+                    MofNCompleteColumn(),
+                    TextColumn("[dim]elapsed[/dim]"),
+                    TimeElapsedColumn(),
+                    TextColumn("[dim]eta[/dim]"),
+                    TimeRemainingColumn(),
+                    console=console,
+                    refresh_per_second=10,
+                    transient=False,
+                    disable=self.verbose,
+                ) as progress:
+                    task_id = progress.add_task(
+                        "Extracting fingerprint", total=len(self.dataset)
+                    )
                     while len(remaining) > 0:
                         all_alive = all([j.is_alive() for j in workers])
                         if not all_alive:
@@ -216,10 +230,22 @@ class DatasetFingerprintExtractor(object):
                                                'an error message, out of RAM is likely the problem. In that case '
                                                'reducing the number of workers might help')
                         done = [i for i in remaining if r[i].ready()]
-                        for _ in done:
-                            pbar.update()
+                        if done:
+                            latest_case = case_ids[done[-1]]
+                            progress.update(
+                                task_id,
+                                advance=len(done),
+                                description=f"Fingerprint · {latest_case}",
+                            )
                         remaining = [i for i in remaining if i not in done]
                         sleep(0.1)
+
+            for case_id, error in errors:
+                _fingerprint_panel(
+                    "Fingerprint processing error",
+                    [f"Case  = {case_id}", f"Error = {error}"],
+                    "red",
+                )
 
             # results = ptqdm(DatasetFingerprintExtractor.analyze_case,
             #                 (training_images_per_case, training_labels_per_case),

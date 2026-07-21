@@ -55,7 +55,20 @@ from threadpoolctl import threadpool_limits
 from torch import nn, autocast, topk
 from torch import distributed as dist
 from torch.nn import functional as F, BCEWithLogitsLoss
-from tqdm import tqdm
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    SpinnerColumn,
+    Task,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.text import Text
 
 from nnunetv2.configuration import ANISO_THRESHOLD
 from nnunetv2.configuration import default_num_processes
@@ -74,6 +87,17 @@ from nnunetv2.training.nnUNetTrainer.variants.data_augmentation.nnUNetTrainerDA5
 from nnunetv2.utilities.default_n_proc_DA import get_allowed_n_proc_DA
 from nnunetv2.utilities.file_path_utilities import check_workers_alive_and_busy
 from nnunetv2.utilities.helpers import dummy_context, empty_cache
+
+
+class _IterationsPerSecondColumn(ProgressColumn):
+    """Render a stable iteration rate, including before the first estimate."""
+
+    def render(self, task: Task) -> Text:
+        speed = task.speed
+        return Text(
+            f"{speed:.2f} it/s" if speed is not None else "-- it/s",
+            style="bold blue",
+        )
 
 
 # ******************************************************************************************************************************************
@@ -479,22 +503,34 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         self.print_to_log_file("\n".join(panel))
 
     def _progress(self, total: int, description: str, color: str):
-        """Create an animated progress bar on rank 0 only."""
-        return tqdm(
-            range(total),
-            total=total,
-            desc=description,
-            disable=self.local_rank != 0,
-            dynamic_ncols=True,
-            leave=False,
-            mininterval=0.5,
-            smoothing=0.1,
-            colour=color,
-            bar_format=(
-                "{l_bar}{bar}| {n_fmt}/{total_fmt} "
-                "[{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        """Start a Rich live progress display on rank 0 only."""
+        if self.local_rank != 0:
+            return None, None
+
+        progress = Progress(
+            SpinnerColumn("bouncingBar", style="bold magenta"),
+            TextColumn(f"[bold {color}]" + "{task.description}"),
+            BarColumn(
+                bar_width=None,
+                style="grey35",
+                complete_style=color,
+                finished_style="bright_green",
             ),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TextColumn("[bold yellow]loss[/bold yellow] {task.fields[loss]:.5f}"),
+            _IterationsPerSecondColumn(),
+            TextColumn("[dim]elapsed[/dim]"),
+            TimeElapsedColumn(),
+            TextColumn("[dim]eta[/dim]"),
+            TimeRemainingColumn(),
+            console=Console(),
+            refresh_per_second=10,
+            transient=False,
         )
+        progress.start()
+        task_id = progress.add_task(description, total=total, loss=0.0)
+        return progress, task_id
 
     def _build_loss(self):
         loss = BCE_topK_loss_sep_channel(k=20)
@@ -965,20 +1001,25 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             )
             train_outputs = []
             running_train_loss = 0.0
-            train_progress = self._progress(
+            train_progress, train_task = self._progress(
                 self.num_iterations_per_epoch,
                 f"Epoch {epoch_1idx:04d} TRAIN",
-                "cyan",
+                "bright_cyan",
             )
-            for iteration in train_progress:
-                output = self.train_step(next(self.dataloader_train))
-                train_outputs.append(output)
-                running_train_loss += float(np.asarray(output["loss"]).mean())
-                if self.local_rank == 0:
-                    train_progress.set_postfix_str(
-                        f"loss={running_train_loss / (iteration + 1):.5f}"
-                    )
-            train_progress.close()
+            try:
+                for iteration in range(self.num_iterations_per_epoch):
+                    output = self.train_step(next(self.dataloader_train))
+                    train_outputs.append(output)
+                    running_train_loss += float(np.asarray(output["loss"]).mean())
+                    if train_progress is not None:
+                        train_progress.update(
+                            train_task,
+                            advance=1,
+                            loss=running_train_loss / (iteration + 1),
+                        )
+            finally:
+                if train_progress is not None:
+                    train_progress.stop()
             self.on_train_epoch_end(train_outputs)
 
             self._validated_this_epoch = (
@@ -994,20 +1035,27 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
                     self.on_validation_epoch_start()
                     val_outputs = []
                     running_val_loss = 0.0
-                    val_progress = self._progress(
+                    val_progress, val_task = self._progress(
                         self.num_val_iterations_per_epoch,
                         f"Epoch {epoch_1idx:04d} VALID",
-                        "magenta",
+                        "bright_magenta",
                     )
-                    for iteration in val_progress:
-                        output = self.validation_step(next(self.dataloader_val))
-                        val_outputs.append(output)
-                        running_val_loss += float(np.asarray(output["loss"]).mean())
-                        if self.local_rank == 0:
-                            val_progress.set_postfix_str(
-                                f"loss={running_val_loss / (iteration + 1):.5f}"
+                    try:
+                        for iteration in range(self.num_val_iterations_per_epoch):
+                            output = self.validation_step(next(self.dataloader_val))
+                            val_outputs.append(output)
+                            running_val_loss += float(
+                                np.asarray(output["loss"]).mean()
                             )
-                    val_progress.close()
+                            if val_progress is not None:
+                                val_progress.update(
+                                    val_task,
+                                    advance=1,
+                                    loss=running_val_loss / (iteration + 1),
+                                )
+                    finally:
+                        if val_progress is not None:
+                            val_progress.stop()
                     self.on_validation_epoch_end(val_outputs)
             else:
                 # Keep logger histories aligned with the epoch count.
