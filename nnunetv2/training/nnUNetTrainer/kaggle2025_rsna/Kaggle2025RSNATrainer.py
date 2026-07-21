@@ -1,4 +1,5 @@
 import multiprocessing
+import sys
 from copy import deepcopy
 from time import sleep, time
 from typing import Union, Tuple, List
@@ -98,6 +99,63 @@ class _IterationsPerSecondColumn(ProgressColumn):
             f"{speed:.2f} it/s" if speed is not None else "-- it/s",
             style="bold blue",
         )
+
+
+class _StaticTrainingProgress:
+    """Notebook-safe progress output that does not rely on terminal redraws."""
+
+    _COLORS = {
+        "bright_cyan": "\033[1;96m",
+        "bright_magenta": "\033[1;95m",
+    }
+    _RESET = "\033[0m"
+
+    def __init__(self, total: int, description: str, color: str):
+        self.total = total
+        self.description = description
+        self.color = self._COLORS.get(color, "\033[1;96m")
+        self.completed = 0
+        self.started_at = time()
+        # First iteration, then approximately every 10%, and the final iteration.
+        self.log_interval = max(1, total // 10)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def update(self, _task_id, advance: int = 1, **fields):
+        self.completed = min(self.total, self.completed + advance)
+        should_log = (
+            self.completed == 1
+            or self.completed == self.total
+            or self.completed % self.log_interval == 0
+        )
+        if not should_log:
+            return
+
+        elapsed = max(time() - self.started_at, 1e-6)
+        speed = self.completed / elapsed
+        remaining = (self.total - self.completed) / speed if speed > 0 else 0
+        percentage = 100 * self.completed / max(1, self.total)
+        bar_width = 20
+        filled = round(bar_width * self.completed / max(1, self.total))
+        # ASCII remains safe in redirected Windows logs and notebook subprocesses.
+        bar = "#" * filled + "-" * (bar_width - filled)
+        loss = float(fields.get("loss", np.nan))
+        print(
+            f"{self.color}[{self.description}]{self._RESET} "
+            f"{bar} {percentage:5.1f}% {self.completed}/{self.total} | "
+            f"loss={loss:.5f} | {speed:.2f} it/s | "
+            f"elapsed={self._format_duration(elapsed)} | "
+            f"eta={self._format_duration(remaining)}",
+            flush=True,
+        )
+
+    def stop(self):
+        pass
 
 
 # ******************************************************************************************************************************************
@@ -507,6 +565,13 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         if self.local_rank != 0:
             return None, None
 
+        console = Console()
+        is_real_terminal = bool(
+            getattr(sys.stdout, "isatty", lambda: False)()
+        ) and not console.is_jupyter
+        if not is_real_terminal:
+            return _StaticTrainingProgress(total, description, color), 0
+
         progress = Progress(
             SpinnerColumn("bouncingBar", style="bold magenta"),
             TextColumn(f"[bold {color}]" + "{task.description}"),
@@ -524,7 +589,7 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             TimeElapsedColumn(),
             TextColumn("[dim]eta[/dim]"),
             TimeRemainingColumn(),
-            console=Console(),
+            console=console,
             refresh_per_second=10,
             transient=False,
         )
