@@ -1,5 +1,4 @@
 import multiprocessing
-import sys
 from copy import deepcopy
 from time import sleep, time
 from typing import Union, Tuple, List
@@ -397,10 +396,8 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             raise ValueError("validation_every_n_epochs must be at least 1")
         self._validated_this_epoch = False
 
-        # Use ANSI colors only in a real terminal. Kaggle/Jupyter capture stdout
-        # and would otherwise expose raw escape sequences such as ``\033[96m``.
-        use_ansi = bool(getattr(sys.stdout, "isatty", lambda: False)())
-        _c = lambda code: f"\033[{code}m" if use_ansi else ""
+        # Pretty console banner (ANSI) for quick debugging
+        _c = lambda code: f"\033[{code}m"
         reset = _c("0")
         bold = _c("1")
         cyan = _c("96")
@@ -426,7 +423,7 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             f"{cyan}arch_class{reset}: {getattr(arch, 'network_class_name', getattr(arch, 'get', lambda k, d=None: None)('network_class_name', None)) if isinstance(arch, dict) else arch}",
             f"{bold}{green}Plans name{reset}: {plans.get('plans_name', 'unknown')}",
             f"{bold}{yellow}Dataset{reset}: {plans.get('dataset_name', 'unknown')}",
-            f"{bold}{magenta}==============================={reset}",
+            f"{bold}{magenta}===============================\033[0m",
         ]
         for line in banner:
             self.print_to_log_file(line)
@@ -462,82 +459,6 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
         self.print_to_log_file(bar_fmt)
         self.print_to_log_file(title_fmt)
         self.print_to_log_file(bar_fmt)
-
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        seconds = max(0, int(seconds))
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    @staticmethod
-    def _supports_unicode_output() -> bool:
-        return "utf" in str(getattr(sys.stdout, "encoding", "") or "").lower()
-
-    def _log_epoch_panel(self, epoch_1idx: int):
-        """Print a compact epoch panel without terminal redraw sequences."""
-        if self.local_rank != 0:
-            return
-        width = 62
-        title = f"─ Epoch {epoch_1idx}/{self.num_epochs} "
-        rows = [
-            "Stage           = Training",
-            f"Iterations      = {self.num_iterations_per_epoch}",
-            f"Learning rate   = {self.optimizer.param_groups[0]['lr']:.7g}",
-            f"Next validation = every {self.validation_every_n_epochs} epochs",
-        ]
-        if self._supports_unicode_output():
-            top = f"╭{title}{'─' * max(0, width - len(title))}╮"
-            bottom = f"╰{'─' * width}╯"
-            vertical = "│"
-        else:
-            ascii_title = f"- Epoch {epoch_1idx}/{self.num_epochs} "
-            top = f"+{ascii_title}{'-' * max(0, width - len(ascii_title))}+"
-            bottom = f"+{'-' * width}+"
-            vertical = "|"
-        left = self._style_log(vertical, color="cyan", bold=True)
-        right = self._style_log(vertical, color="cyan", bold=True)
-        output = [self._style_log(top, color="cyan", bold=True)]
-        output.extend(f"{left} {row.ljust(width - 1)}{right}" for row in rows)
-        output.append(self._style_log(bottom, color="cyan", bold=True))
-        self.print_to_log_file("\n".join(output))
-
-    def _log_progress_snapshot(
-        self,
-        stage: str,
-        epoch_1idx: int,
-        completed: int,
-        total: int,
-        running_loss: float,
-        started_at: float,
-    ):
-        """Print a notebook-safe two-line progress snapshot at sparse intervals."""
-        if self.local_rank != 0:
-            return
-        interval = max(1, total // 10)
-        if completed != total and completed % interval != 0:
-            return
-
-        elapsed = max(time() - started_at, 1e-6)
-        speed = completed / elapsed
-        remaining = (total - completed) / speed if speed > 0 else 0
-        percentage = 100 * completed / max(1, total)
-        bar_width = 20
-        filled = round(bar_width * completed / max(1, total))
-        if self._supports_unicode_output():
-            bar = "█" * filled + "░" * (bar_width - filled)
-        else:
-            bar = "#" * filled + "-" * (bar_width - filled)
-        color = "cyan" if stage == "TRAIN" else "magenta"
-        heading = self._style_log(
-            f"Epoch {epoch_1idx:04d} {stage}", color=color, bold=True
-        )
-        bar = self._style_log(bar, color=color, bold=True)
-        self.print_to_log_file(
-            f"{heading}: {percentage:5.1f}%|{bar}| {completed}/{total}\n"
-            f"[{self._format_duration(elapsed)}<{self._format_duration(remaining)}, "
-            f"{speed:.2f} it/s, loss={running_loss / completed:.5f}]"
-        )
 
     def _build_loss(self):
         loss = BCE_topK_loss_sep_channel(k=20)
@@ -995,25 +916,12 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
             self.on_epoch_start()
 
             self.on_train_epoch_start()
-            epoch_1idx = self.current_epoch + 1
-            self._log_epoch_panel(epoch_1idx)
             train_outputs = []
-            running_train_loss = 0.0
-            train_started_at = time()
-            for iteration in range(1, self.num_iterations_per_epoch + 1):
-                output = self.train_step(next(self.dataloader_train))
-                train_outputs.append(output)
-                running_train_loss += float(np.asarray(output["loss"]).mean())
-                self._log_progress_snapshot(
-                    "TRAIN",
-                    epoch_1idx,
-                    iteration,
-                    self.num_iterations_per_epoch,
-                    running_train_loss,
-                    train_started_at,
-                )
+            for _ in range(self.num_iterations_per_epoch):
+                train_outputs.append(self.train_step(next(self.dataloader_train)))
             self.on_train_epoch_end(train_outputs)
 
+            epoch_1idx = self.current_epoch + 1
             self._validated_this_epoch = (
                 epoch_1idx % self.validation_every_n_epochs == 0
                 or epoch_1idx == self.num_epochs
@@ -1026,19 +934,9 @@ class Kaggle2025RSNATrainer(nnUNetTrainer):
                 with torch.no_grad():
                     self.on_validation_epoch_start()
                     val_outputs = []
-                    running_val_loss = 0.0
-                    val_started_at = time()
-                    for iteration in range(1, self.num_val_iterations_per_epoch + 1):
-                        output = self.validation_step(next(self.dataloader_val))
-                        val_outputs.append(output)
-                        running_val_loss += float(np.asarray(output["loss"]).mean())
-                        self._log_progress_snapshot(
-                            "VALID",
-                            epoch_1idx,
-                            iteration,
-                            self.num_val_iterations_per_epoch,
-                            running_val_loss,
-                            val_started_at,
+                    for _ in range(self.num_val_iterations_per_epoch):
+                        val_outputs.append(
+                            self.validation_step(next(self.dataloader_val))
                         )
                     self.on_validation_epoch_end(val_outputs)
             else:
